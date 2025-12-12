@@ -1,0 +1,77 @@
+# FAST-LIO Dataset Configuration for Gaussian-LIC with Coarse-to-Fine Strategy
+# Optimized for outdoor LiDAR-Inertial-Camera SLAM scenarios
+
+# Camera intrinsics (FAST-LIO dataset specific)
+width: 640
+height: 512
+fx: 431.795259219
+fy: 431.550090267
+cx: 310.833037316
+cy: 266.985989326
+
+# Frame selection - more aggressive for FAST-LIO data
+select_every_k_frame: 3  # Reduced from 5 to capture more dynamic scenes
+
+# Gaussian splatting parameters
+sh_degree: 3
+white_background: false  # Outdoor scenes
+random_background: false
+convert_SHs_python: false
+compute_cov3D_python: false
+lambda_erank: 0
+scaling_scale: 1
+
+# Learning rates - tuned for FAST-LIO outdoor scenarios
+position_lr: 0.00012      # Slightly reduced for more stable outdoor mapping
+feature_lr: 0.002         # Reduced for better color consistency
+opacity_lr: 0.05
+scaling_lr: 0.004         # Slightly reduced for outdoor scale stability
+rotation_lr: 0.001
+lambda_dssim: 0.25        # Increased for better perceptual quality
+
+# Exposure compensation
+apply_exposure: true      # Enable for outdoor lighting variations
+exposure_lr: 0.001
+
+# Skybox for outdoor scenes
+skybox_points_num: 150000  # Increased for larger outdoor environments
+skybox_radius: 2000        # Increased for outdoor scenes
+
+# ===== COARSE-TO-FINE STRATEGY FOR FAST-LIO =====
+# Optimized for outdoor LiDAR-dense environments
+
+enable_coarse_to_fine: true
+
+# Initial sampling - conservative for outdoor scenes with rich geometry
+initial_sampling_ratio: 0.25      # Start with 25% for dense outdoor point clouds
+min_initial_points: 2000          # Higher minimum for outdoor complexity
+max_initial_points: 80000         # Higher maximum for large outdoor scenes
+
+# Densification parameters - tuned for outdoor dynamics
+densify_grad_threshold: 0.00015   # Lower threshold for finer outdoor details
+densify_size_threshold: 25.0      # Higher threshold for outdoor scale variations
+densify_start_iter: 300           # Start earlier for dynamic outdoor scenes
+densify_stop_iter: 12000          # Stop earlier to avoid over-densification
+densify_interval: 80              # More frequent densification for outdoor
+
+# Pruning parameters - aggressive for outdoor scene management
+prune_opacity_threshold: 0.008    # Higher threshold for outdoor noise removal
+prune_scale_threshold: 80.0       # Lower threshold for outdoor scale control
+prune_start_iter: 2000            # Start earlier for outdoor scene cleanup
+prune_interval: 80                # More frequent pruning for outdoor scenes
+
+# Advanced coarse-to-fine parameters for FAST-LIO
+refinement_levels: 3              # Multiple refinement levels for outdoor complexity
+adaptive_sampling: true           # Enable adaptive sampling based on scene complexity
+gradient_accumulation_window: 50  # Larger window for stable outdoor gradients
+
+# Adaptive Voxel Manager parameters
+enable_adaptive_voxel: true       # Enable geometry-aware voxel management
+base_voxel_size: 0.1             # Base voxel size in meters
+max_voxel_levels: 4              # Maximum voxel resolution levels (0=coarsest, 3=finest)
+complexity_threshold_refine: 0.7  # Complexity threshold for voxel refinement
+complexity_threshold_coarsen: 0.3 # Complexity threshold for voxel coarsening
+voxel_update_interval: 10        # Update voxel grid every N iterations
+gradient_weight: 0.4             # Weight for gradient-based complexity
+curvature_weight: 0.4            # Weight for curvature-based complexity  
+density_weight: 0.2              # Weight for density-based complexity

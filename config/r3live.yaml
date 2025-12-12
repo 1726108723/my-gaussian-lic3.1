@@ -1,0 +1,43 @@
+width: 640
+height: 512
+fx: 431.71205
+fy: 431.70855
+cx: 320.3404
+cy: 259.1696
+
+select_every_k_frame: 5
+
+sh_degree: 3
+white_background: false  # no adjustment needed
+random_background: false  # no adjustment needed
+convert_SHs_python: false  # no adjustment needed
+compute_cov3D_python: false  # no adjustment needed
+lambda_erank: 0  # no adjustment needed
+scaling_scale: 1  # 2 for less Gaussians
+
+position_lr: 0.00016
+feature_lr: 0.0025
+opacity_lr: 0.05
+scaling_lr: 0.005
+rotation_lr: 0.001
+lambda_dssim: 0.2
+
+apply_exposure: false
+exposure_lr: 0.001
+skybox_points_num: 100000  # 0 for indoor
+skybox_radius: 1000
+
+# Coarse-to-fine sampling strategy parameters
+enable_coarse_to_fine: true
+initial_sampling_ratio: 0.3  # Start with 30% of points
+min_initial_points: 1000
+max_initial_points: 50000
+densify_grad_threshold: 0.0002  # Gradient threshold for densification
+densify_size_threshold: 20.0    # Size threshold for split vs clone
+densify_start_iter: 500         # Start densification after 500 iterations
+densify_stop_iter: 15000        # Stop densification after 15000 iterations
+densify_interval: 100           # Densify every 100 iterations
+prune_opacity_threshold: 0.005  # Prune Gaussians with opacity < 0.005
+prune_scale_threshold: 100.0    # Prune oversized Gaussians
+prune_start_iter: 3000          # Start pruning after 3000 iterations
+prune_interval: 100             # Prune every 100 iterations
