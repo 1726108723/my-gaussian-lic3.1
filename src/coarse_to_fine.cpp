@@ -325,22 +325,156 @@ void CoarseToFineManager::addSilhouetteGaussians(std::shared_ptr<GaussianModel>&
     // SplaTAM-style silhouette-guided densification
     std::cout << "\033[1;36m[CoarseToFine] Performing SplaTAM-style silhouette-guided densification...\033[0m" << std::endl;
     
-    // TODO: Full implementation requires proper rendering integration
-    // For now, this is a placeholder that demonstrates the concept
-    
-    // In a complete implementation, this function would:
-    // 1. Render current view to get alpha/silhouette map
-    // 2. Find holes where silhouette < 0.5 or depth error is large  
-    // 3. Unproject pixels to 3D points
-    // 4. Filter through voxel manager
-    // 5. Add new Gaussians to the model
-    
-    std::cout << "\033[1;33m[CoarseToFine] SplaTAM silhouette densification placeholder called\033[0m" << std::endl;
-    std::cout << "\033[1;33m[CoarseToFine] This would add Gaussians based on rendered alpha < 0.5\033[0m" << std::endl;
-    
-    // Example of how voxel manager integration would work:
-    if (voxel_manager_ && voxel_manager_->isEnabled()) {
-        std::cout << "\033[1;32m[CoarseToFine] Voxel manager is available for spatial filtering\033[0m" << std::endl;
+    try {
+        // 1. Render current view to get alpha/silhouette map
+        torch::Tensor bg_color = torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+        
+        auto render_result = render(viewpoint_camera, pc, bg_color, false, false, 1.0f);
+        
+        // Extract rendered components
+        torch::Tensor rendered_image = std::get<0>(render_result);    // [3, H, W]
+        torch::Tensor rendered_alpha = std::get<1>(render_result);    // [H, W] - final transmittance (1-alpha)
+        torch::Tensor screenspace_points = std::get<2>(render_result);
+        torch::Tensor visibility_filter = std::get<3>(render_result);
+        torch::Tensor radii = std::get<4>(render_result);
+        
+        // Convert final transmittance to alpha (opacity)
+        torch::Tensor alpha_map = 1.0f - rendered_alpha;  // [H, W]
+        
+        // 2. Identify holes where silhouette < 0.5 or depth error is large
+        auto alpha_mask = (alpha_map < 0.5f);  // Low opacity regions
+        auto valid_depth_mask = (gt_depth > 0.05f) & (gt_depth < 50.0f);  // Valid depth range
+        
+        // For depth error detection, we need rendered depth
+        // Since the current renderer doesn't return depth directly, we'll focus on alpha-based holes
+        // In a full implementation, you would modify the renderer to also return depth
+        
+        // Final hole mask: low alpha AND valid depth
+        auto hole_mask = alpha_mask & valid_depth_mask;
+        
+        int num_holes = hole_mask.sum().item<int>();
+        if (num_holes == 0) {
+            std::cout << "\033[1;33m[CoarseToFine] No holes detected for densification\033[0m" << std::endl;
+            return;
+        }
+        
+        std::cout << "\033[1;32m[CoarseToFine] Found " << num_holes << " hole pixels for densification\033[0m" << std::endl;
+        
+        // 3. Sample hole pixels (limit to prevent explosion)
+        auto hole_indices = torch::nonzero(hole_mask);  // [N, 2] (y, x)
+        
+        int max_new_points = std::min(100, num_holes);  // Reduced to avoid gradient shape issues
+        if (hole_indices.size(0) > max_new_points) {
+            // Random sampling
+            auto rand_idx = torch::randperm(hole_indices.size(0), torch::TensorOptions().dtype(torch::kLong).device(hole_indices.device()));
+            hole_indices = hole_indices.index_select(0, rand_idx.slice(0, 0, max_new_points));
+        }
+        
+        // 4. Unproject pixels to 3D points
+        std::vector<torch::Tensor> new_xyz_list;
+        std::vector<torch::Tensor> new_color_list;
+        std::vector<torch::Tensor> new_scale_list;
+        
+        // Get target device from existing Gaussian model
+        torch::Device target_device = pc->xyz_.device();
+        
+        // Camera intrinsics
+        float fx = viewpoint_camera->fx_;
+        float fy = viewpoint_camera->fy_;
+        float cx = viewpoint_camera->cx_;
+        float cy = viewpoint_camera->cy_;
+        
+        // Camera to world transform
+        torch::Tensor c2w = viewpoint_camera->world_view_transform_.inverse();
+        
+        for (int i = 0; i < hole_indices.size(0); ++i) {
+            int y = hole_indices[i][0].item<int>();
+            int x = hole_indices[i][1].item<int>();
+            
+            float d = gt_depth[y][x].item<float>();
+            if (d <= 0.05f || d >= 50.0f) continue;  // Skip invalid depths
+            
+            // Unproject: Image -> Camera Space
+            float z_c = d;
+            float x_c = (x - cx) * z_c / fx;
+            float y_c = (y - cy) * z_c / fy;
+            
+            torch::Tensor point_c = torch::tensor({x_c, y_c, z_c, 1.0f}, 
+                                                torch::TensorOptions().dtype(torch::kFloat32).device(target_device));
+            
+            // Camera Space -> World Space
+            torch::Tensor point_w = torch::matmul(c2w, point_c).slice(0, 0, 3);
+            
+            // 5. Filter through voxel manager
+            if (voxel_manager_ && voxel_manager_->isEnabled()) {
+                if (!shouldAddGaussianAt(point_w)) {
+                    continue;  // Voxel manager says this region is too dense
+                }
+            }
+            
+            new_xyz_list.push_back(point_w);
+            
+            // Extract color from GT image
+            torch::Tensor pixel_color = gt_image.index({torch::indexing::Slice(), y, x});  // [3]
+            new_color_list.push_back(pixel_color);
+            
+            // Initialize scale based on depth (SplaTAM style)
+            float scale_init = std::log(std::max(0.001f, d / fx));
+            torch::Tensor scale_tensor = torch::full({3}, scale_init, 
+                                                   torch::TensorOptions().dtype(torch::kFloat32).device(target_device));
+            new_scale_list.push_back(scale_tensor);
+        }
+        
+        if (new_xyz_list.empty()) {
+            std::cout << "\033[1;33m[CoarseToFine] No valid points after voxel filtering\033[0m" << std::endl;
+            return;
+        }
+        
+        // 6. Add new Gaussians to the model
+        // Use the target_device already declared above
+        torch::Tensor new_xyz = torch::stack(new_xyz_list).to(target_device);
+        torch::Tensor new_rgb = torch::stack(new_color_list).to(target_device);
+        torch::Tensor new_scales = torch::stack(new_scale_list).to(target_device);
+        
+        // Initialize other attributes on the correct device
+        torch::Tensor new_rotations = torch::zeros({new_xyz.size(0), 4}, 
+                                                 torch::TensorOptions().dtype(torch::kFloat32).device(target_device));
+        new_rotations.index({torch::indexing::Slice(), 0}) = 1.0f;  // Unit quaternion
+        
+        torch::Tensor new_opacities = general_utils::inverse_sigmoid(
+            0.1f * torch::ones({new_xyz.size(0), 1}, 
+                             torch::TensorOptions().dtype(torch::kFloat32).device(target_device))
+        );
+        
+        // Convert RGB to SH
+        torch::Tensor new_features_dc = RGB2SH(new_rgb).unsqueeze(1);  // [N, 1, 3]
+        torch::Tensor new_features_rest = torch::zeros({new_xyz.size(0), 15, 3}, 
+                                                      torch::TensorOptions().dtype(torch::kFloat32).device(target_device));
+        
+        // Add to Gaussian model
+        pc->densificationPostfix(new_xyz, new_features_dc, new_features_rest, 
+                                new_opacities, new_scales, new_rotations);
+        
+        std::cout << "\033[1;32m[CoarseToFine] Successfully added " << new_xyz_list.size() 
+                  << " Gaussians for hole filling\033[0m" << std::endl;
+        
+        // Update voxel manager if available
+        if (voxel_manager_ && voxel_manager_->isEnabled()) {
+            // Create dummy parameters for updateVoxelGrid since we just added new points
+            // In a full implementation, you would pass the actual Gaussian parameters
+            torch::Tensor dummy_gradients = torch::zeros_like(new_xyz).to(target_device);
+            torch::Tensor dummy_normals = torch::zeros_like(new_xyz).to(target_device);
+            std::vector<int> new_indices;
+            for (int i = 0; i < new_xyz.size(0); ++i) {
+                new_indices.push_back(i);
+            }
+            
+            voxel_manager_->updateVoxelGrid(new_xyz, dummy_gradients, dummy_normals, new_indices);
+            std::cout << "\033[1;36m[CoarseToFine] Updated voxel grid after densification\033[0m" << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "\033[1;31m[CoarseToFine] Error in silhouette densification: " << e.what() << "\033[0m" << std::endl;
     }
 }
 
